@@ -1,79 +1,64 @@
-import asyncio
-import logging
-
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
+import os
+import asyncpg
+from services.member_service import MemberService
+from services.sanction_service import SanctionService
+from services.rank_service import RankService
+from services.audit_service import AuditService
+from services.setup_service import SetupService
+from repositories.member_repository import MemberRepository
+from repositories.sanction_repository import SanctionRepository
+from repositories.rank_repository import RankRepository
+from repositories.guild_repository import GuildRepository
+from commands.member import MemberCommands
+from commands.rank import RankCommands
+from commands.sanction import SanctionCommands
+from commands.setup import SetupCommands
 
-from config import Config
-from database import create_pool, init_db
+load_dotenv()
 
+class RammoHQBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=discord.Intents.all())
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+        async def setup_hook(self):
+            self.pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))
+            member_repository = MemberRepository(self.pool)
+            sanction_repository = SanctionRepository(self.pool)
+            rank_repository = RankRepository(self.pool)
+            guild_repository = GuildRepository(self.pool)
 
+            member_service = MemberService(member_repository)
+            sanction_service = SanctionService(sanction_repository)
+            rank_service = RankService(rank_repository)
+            audit_service = AuditService(self.pool)
+            setup_service = SetupService(self.pool)
 
-class RammoBot(commands.Bot):
-    def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.guilds = True
-        intents.members = True
+            await self.add_cog(MemberCommands(self, member_service, audit_service))
+            await self.add_cog(RankCommands(self, rank_service, audit_service))
+            await self.add_cog(SanctionCommands(self, sanction_service, audit_service))
+            await self.add_cog(SetupCommands(self, setup_service))
 
-        super().__init__(
-            command_prefix="!",
-            intents=intents,
-        )
+            bot = RammoHQBot()
 
-        self.db_pool = None
+            @bot.event
+            async def on_ready():
+                print(f"Logged in as {bot.user}")
+                try:
+                    synced = await bot.tree.sync()
+                    print(f"Synced {len(synced)} commands")
+                    except Exception as e:
+                        print(e)
 
-    async def setup_hook(self) -> None:
-        self.db_pool = await create_pool()
-        await init_db(self.db_pool)
+                        @bot.tree.error
+                        async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+                            if isinstance(error, app_commands.MissingPermissions):
+                                await interaction.response.send_message("❌ You do not have the required permissions to use this command.", ephemeral=True)
+                                else:
+                                    await interaction.response.send_message("❌ An error occurred while executing the command.", ephemeral=True)
+                                    print(error)
 
-        await self.load_extension("commands.setup")
-
-        if Config.GUILD_ID:
-            guild = discord.Object(id=Config.GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            logging.info(
-                "%s Slash Command(s) mit Guild %s synchronisiert.",
-                len(synced),
-                Config.GUILD_ID,
-            )
-        else:
-            synced = await self.tree.sync()
-            logging.info(
-                "%s globale Slash Command(s) synchronisiert.",
-                len(synced),
-            )
-
-    async def close(self) -> None:
-        if self.db_pool is not None:
-            await self.db_pool.close()
-
-        await super().close()
-
-
-bot = RammoBot()
-
-
-@bot.event
-async def on_ready() -> None:
-    logging.info(
-        "Logged in as %s (%s)",
-        bot.user,
-        bot.user.id if bot.user else "n/a",
-    )
-
-
-async def main() -> None:
-    Config.validate()
-
-    async with bot:
-        await bot.start(Config.DISCORD_TOKEN)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+                                    if __name__ == "__main__":
+                                        bot.run(os.getenv("DISCORD_TOKEN"))
